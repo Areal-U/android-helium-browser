@@ -1,79 +1,105 @@
 #!/bin/bash
+
 source common.sh
 set_keys
+
 export VERSION=$(grep -m1 -o '[0-9]\+\(\.[0-9]\+\)\{3\}' vanadium/args.gn)
-export CHROMIUM_SOURCE=https://chromium.googlesource.com/chromium/src.git # https://github.com/chromium/chromium.git
+export CHROMIUM_SOURCE=https://chromium.googlesource.com/chromium/src.git
 export DEBIAN_FRONTEND=noninteractive
+
 sudo apt-get update
-sudo apt-get install -y sudo lsb-release file nano git curl python3 python3-pillow imagemagick
 
-# https://github.com/uazo/cromite/blob/master/tools/images/chr-source/prepare-build.sh
+sudo apt-get install -y sudo
+
+sudo apt-get install -y lsb-release
+
+sudo apt-get install -y file
+
+sudo apt-get install -y nano
+
+sudo apt-get install -y git
+
+sudo apt-get install -y curl
+
+sudo apt-get install -y python3
+
+sudo apt-get install -y python3-pillow
+
+sudo apt-get install -y imagemagick
+
 git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
+
 export PATH="$PWD/depot_tools:$PATH"
-mkdir -p chromium/src/out/Default; cd chromium
-gclient root; cd src
+
+mkdir -p chromium/src/out/Default
+
+cd chromium
+
+gclient root
+
+cd src
+
 git init
+
 git remote add origin $CHROMIUM_SOURCE
+
 git fetch --depth 1 $CHROMIUM_SOURCE +refs/tags/$VERSION:chromium_$VERSION
+
 git checkout $VERSION
+
 export COMMIT=$(git show-ref -s $VERSION | head -n1)
-cat > ../.gclient <<EOF
-solutions = [
-  {
-    "name": "src",
-    "url": "$CHROMIUM_SOURCE@$COMMIT",
-    "deps_file": "DEPS",
-    "managed": False,
-    "custom_vars": {
-      "checkout_android_prebuilts_build_tools": True,
-      "checkout_telemetry_dependencies": False,
-      "codesearch": "Debug",
-    },
+
+cat > ../.gclient << EOF
+solutions = [{
+  "name": "src",
+  "url": "$CHROMIUM_SOURCE@$COMMIT",
+  "managed": False,
+  "custom_deps": {},
+  "custom_vars": {
+    "checkout_android": True,
   },
-]
-target_os = ["android"]
+}]
 EOF
-git submodule foreach git config -f ./.git/config submodule.$name.ignore all
-git config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
 
-# https://grapheneos.org/build#browser-and-webview
-rm -rf $SCRIPT_DIR/vanadium/patches/*trichrome-{apk-build-targets,browser-apk-targets}.patch
-rm -rf $SCRIPT_DIR/vanadium/patches/*{detailed,supported}-language*.patch
-# rm -rf $SCRIPT_DIR/vanadium/patches/*crashpad*.patch
-replace "$SCRIPT_DIR/vanadium/patches" "VANADIUM" "HELIUM"
-replace "$SCRIPT_DIR/vanadium/patches" "Vanadium" "Helium"
-replace "$SCRIPT_DIR/vanadium/patches" "vanadium" "helium"
-replace "$SCRIPT_DIR/vanadium/patches" ".helium.app" ".vanadium.app" # components
-git am --whitespace=nowarn --keep-non-patch $SCRIPT_DIR/vanadium/patches/*.patch
+cd ..
 
-gclient sync -D --no-history --nohooks
+gclient sync --nohooks --no-history
+
+cd src
+
+build/install-build-deps.sh --android
+
 gclient runhooks
-rm -rf third_party/angle/third_party/VK-GL-CTS/
-./build/install-build-deps.sh --no-prompt
 
-# https://github.com/imputnet/helium-linux/blob/main/scripts/shared.sh
-# python3 "${SCRIPT_DIR}/helium/utils/name_substitution.py" --sub -t .
-# python3 "${SCRIPT_DIR}/helium/utils/helium_version.py" --tree "${SCRIPT_DIR}/helium" --chromium-tree .
-# python3 "${SCRIPT_DIR}/helium/utils/generate_resources.py" "${SCRIPT_DIR}/helium/resources/generate_resources.txt" "${SCRIPT_DIR}/helium/resources"
-# python3 "${SCRIPT_DIR}/helium/utils/replace_resources.py" "${SCRIPT_DIR}/helium/resources/helium_resources.txt" "${SCRIPT_DIR}/helium/resources" .
+rm -rf android_webview/browser/aw_field_trial_creator.*
+
+for patch in $SCRIPT_DIR/vanadium/patches/*.patch; do
+  sed -i 's/const bool kAlwaysUseOSFilePicker = true;/const bool kAlwaysUseOSFilePicker = false;/' $patch
+  sed -i 's/org.grapheneos.vanadium/com.android.chrome/g' $patch
+  sed -i 's/Vanadium/Chrome/g' $patch
+  sed -i 's/vanadiumium/chromium/g' $patch
+  sed -i 's/vanadium/chrome/g' $patch
+  sed -i 's/VANADIUM_VERSION/CHROME_VERSION/g' $patch
+done
+
+git am $SCRIPT_DIR/vanadium/patches/*.patch
 
 source $SCRIPT_DIR/patch.sh
 
 cp $SCRIPT_DIR/args.gn out/Default/args.gn
-sudo dpkg --add-architecture i386; sudo apt-get update; sudo apt-get install -y libgcc-s1:i386
-gn gen out/Default # gn args out/Default; echo 'treat_warnings_as_errors = false' >> out/Default/args.gn
-mkdir -p out/tmp out/release
-autoninja -C out/Default chrome_public_apk
-mv $(find out/Default/apks -name 'Chrome*.apk') out/tmp/$VERSION-armeabi-v7a.apk
 
-sed -i 's/target_cpu = "arm"/target_cpu = "arm64"/' out/Default/args.gn
-autoninja -C out/Default chrome_public_apk chrome_public_bundle
+mkdir -p out/tmp
+
+mkdir -p out/release
+
+autoninja -C out/Default chrome_public_apk
+
 mv $(find out/Default/apks -name 'Chrome*.apk') out/tmp/$VERSION-arm64-v8a.apk
-mv $(find out/Default/apks -name 'Chrome*.aab') out/tmp/$VERSION-arm64-v8a.aab
 
 export PATH=$PWD/third_party/jdk/current/bin/:$PATH
+
 export ANDROID_HOME=$PWD/third_party/android_sdk/public
-sign_apk out/tmp/$VERSION-armeabi-v7a.apk out/release/$VERSION-armeabi-v7a.apk
+
 sign_apk out/tmp/$VERSION-arm64-v8a.apk out/release/$VERSION-arm64-v8a.apk
-sign_aab out/tmp/$VERSION-arm64-v8a.aab out/release/$VERSION-arm64-v8a.aab
+
 rm -rf $SCRIPT_DIR/keys
